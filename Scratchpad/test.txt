@@ -1,0 +1,3 @@
+import AppKit
+print(NSImage(systemSymbolName: "macbook", accessibilityDescription: nil) != nil)
+print(NSImage(systemSymbolName: "hifispeaker", accessibilityDescription: nil) != nil)

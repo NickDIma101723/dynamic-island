@@ -1,0 +1,8 @@
+import SwiftUI
+
+struct TestView: View {
+    let unlockPublisher = DistributedNotificationCenter.default().publisher(for: NSNotification.Name("com.apple.screenIsUnlocked"))
+    var body: some View {
+        Text("Hi").onReceive(unlockPublisher) { _ in print("Unlocked") }
+    }
+}

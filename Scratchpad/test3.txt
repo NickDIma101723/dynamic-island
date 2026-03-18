@@ -1,0 +1,9 @@
+import SwiftUI
+
+@available(macOS 14.0, *)
+struct TestView: View {
+    var body: some View {
+        Image(systemName: "lock.fill")
+            .contentTransition(.symbolEffect(.replace))
+    }
+}

@@ -1,0 +1,4 @@
+import Foundation
+
+let pub = DistributedNotificationCenter.default().publisher(for: NSNotification.Name("com.apple.screenIsUnlocked"))
+print(pub)

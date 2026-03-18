@@ -43,8 +43,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         panel.contentView = hostingView
         
-        // Ghosting Effect over Menu Bar, but strictly below the cursor!
-        panel.level = .statusBar
+        // Ghosting Effect OVER the Menu Bar to prevent the system from stealing your mouse hover!
+        panel.level = .popUpMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         
         // Let macOS natively handle ignoring mouse clicks on transparent NSPanel pixels! 
