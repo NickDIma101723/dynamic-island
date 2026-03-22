@@ -5,8 +5,157 @@
 //
 
 import SwiftUI
+import WidgetKit
 import IOBluetooth
+import Speech
 internal import Combine
+
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material
+    var blendingMode: NSVisualEffectView.BlendingMode
+    
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
+class GeminiManager: ObservableObject {
+    @Published var responseText: String = "Hi! How can I help you?"
+    @Published var isChecking: Bool = false
+    @Published var isListening: Bool = false
+    
+    private let apiKey = "AIzaSyC0gOEcq_4UeWKPYPLRMNnvtXkVZREOt1g"
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private let audioEngine = AVAudioEngine()
+    
+    func ask(prompt: String) {
+        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
+        
+        DispatchQueue.main.async {
+            self.isChecking = true
+            self.responseText = "Thinking..."
+        }
+        
+        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\\(apiKey)") else { return }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "contents": [
+                ["parts": [["text": prompt]]]
+            ]
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                self.isChecking = false
+                if let data = data,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let candidates = json["candidates"] as? [[String: Any]],
+                   let first = candidates.first,
+                   let content = first["content"] as? [String: Any],
+                   let parts = content["parts"] as? [[String: Any]],
+                   let firstPart = parts.first,
+                   let text = firstPart["text"] as? String {
+                    self.responseText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    if let data = data, let jsonStr = String(data: data, encoding: .utf8) {
+                        print("Gemini API Data: \(jsonStr)")
+                        // Try to parse an error message
+                        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let errorObj = json["error"] as? [String: Any],
+                           let errMsg = errorObj["message"] as? String {
+                            self.responseText = "API Error: \(errMsg)"
+                        } else {
+                            self.responseText = "Error: Invalid response format from Model."
+                        }
+                    } else if let error = error {
+                        print("Gemini API Network Error: \(error)")
+                        self.responseText = "Network Error: \(error.localizedDescription)"
+                    } else {
+                        self.responseText = "Unknown Error occurred."
+                    }
+                }
+            }
+        }.resume()
+    }
+    
+    func toggleListening(onTextUpdate: @escaping (String) -> Void, onDone: @escaping (String) -> Void) {
+        if audioEngine.isRunning {
+             audioEngine.stop()
+             recognitionRequest?.endAudio()
+             isListening = false
+             return
+         }
+         
+         SFSpeechRecognizer.requestAuthorization { authStatus in
+             DispatchQueue.main.async {
+                 if authStatus == .authorized {
+                     self.startListening(onTextUpdate: onTextUpdate, onDone: onDone)
+                 } else {
+                     self.responseText = "Speech recognition access denied."
+                 }
+             }
+         }
+    }
+    
+    private func startListening(onTextUpdate: @escaping (String) -> Void, onDone: @escaping (String) -> Void) {
+        recognitionTask?.cancel()
+        self.recognitionTask = nil
+        
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let recognitionRequest = recognitionRequest else { return }
+        recognitionRequest.shouldReportPartialResults = true
+        
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            recognitionRequest.append(buffer)
+        }
+        
+        audioEngine.prepare()
+        try? audioEngine.start()
+        
+        isListening = true
+        var finalString = ""
+        
+        self.responseText = "Listening..."
+        
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { result, error in
+            var isFinal = false
+            if let result = result {
+                finalString = result.bestTranscription.formattedString
+                onTextUpdate(finalString)
+                isFinal = result.isFinal
+            }
+            if error != nil || isFinal {
+                self.audioEngine.stop()
+                inputNode.removeTap(onBus: 0)
+                self.recognitionRequest = nil
+                self.recognitionTask = nil
+                self.isListening = false
+                if !finalString.isEmpty && error == nil {
+                    onDone(finalString)
+                }
+            }
+        }
+    }
+}
 
 struct ScrollDetector: NSViewRepresentable {
     var onScroll: (CGFloat) -> Void
@@ -32,29 +181,128 @@ class BluetoothManager: NSObject, ObservableObject {
     @Published var newlyConnectedDevice: String? = nil
     @Published var showConnectionAlert = false
     
+    @Published var batteryLeft: Int? = nil
+    @Published var batteryRight: Int? = nil
+    @Published var batteryCase: Int? = nil
+    @Published var batterySingle: Int? = nil
+    
+    var hasConnectedDevice: Bool {
+        if let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
+            return devices.contains(where: { $0.isConnected() })
+        }
+        return false
+    }
+    
     override init() {
         super.init()
         IOBluetoothDevice.register(forConnectNotifications: self, selector: #selector(deviceConnected(_:device:)))
     }
     
+    func checkLatestConnectedDevice() {
+        if let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
+            if let connected = devices.first(where: { $0.isConnected() }) {
+                let name = connected.name ?? "Headphones"
+                DispatchQueue.main.async {
+                    self.newlyConnectedDevice = name
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    self.fetchBatteryLevels(for: name)
+                }
+            }
+        }
+    }
+    
     @objc func deviceConnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
         let deviceName = device.name ?? "Bluetooth Device"
         
-        DispatchQueue.main.async {
-            self.newlyConnectedDevice = deviceName
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
-                self.showConnectionAlert = true
-            }
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.fetchBatteryLevels(for: deviceName)
             
-            // Hide the alert automatically after 4 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
-                if self.newlyConnectedDevice == deviceName {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                        self.showConnectionAlert = false
+            DispatchQueue.main.async {
+                self.newlyConnectedDevice = deviceName
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                    self.showConnectionAlert = true
+                }
+                
+                // Hide the alert automatically after 5 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                    if self.newlyConnectedDevice == deviceName {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                            self.showConnectionAlert = false
+                        }
                     }
                 }
             }
         }
+    }
+    
+    private func fetchBatteryLevels(for name: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+        process.arguments = ["SPBluetoothDataType"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                parseBattery(from: output, targetDevice: name)
+            }
+        } catch {
+            print("Failed to query battery")
+        }
+    }
+    
+    private func parseBattery(from output: String, targetDevice: String) {
+        var foundDevice = false
+        var bLeft: Int? = nil
+        var bRight: Int? = nil
+        var bCase: Int? = nil
+        var bSingle: Int? = nil
+        
+        let lines = output.components(separatedBy: .newlines)
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).hasSuffix(":") {
+                // If we hit a new device block, check if we're already parsing the target
+                if foundDevice { break }
+                let blockName = line.replacingOccurrences(of: ":", with: "").trimmingCharacters(in: .whitespaces)
+                if blockName == targetDevice {
+                    foundDevice = true
+                }
+                continue
+            }
+            
+            if foundDevice {
+                let lowerLine = line.lowercased()
+                if lowerLine.contains("battery level left:") || lowerLine.contains("left battery level:") {
+                    bLeft = extractPercentage(from: line)
+                } else if lowerLine.contains("battery level right:") || lowerLine.contains("right battery level:") {
+                    bRight = extractPercentage(from: line)
+                } else if lowerLine.contains("battery level case:") || lowerLine.contains("case battery level:") {
+                    bCase = extractPercentage(from: line)
+                } else if lowerLine.contains("battery level:") || lowerLine.contains("battery:") {
+                    bSingle = extractPercentage(from: line)
+                }
+            }
+        }
+        
+        DispatchQueue.main.async {
+            self.batteryLeft = bLeft
+            self.batteryRight = bRight
+            self.batteryCase = bCase
+            self.batterySingle = bSingle
+        }
+    }
+    
+    private func extractPercentage(from string: String) -> Int? {
+        let pattern = "(\\d+)"
+        if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+           let match = regex.firstMatch(in: string, options: [], range: NSRange(location: 0, length: string.count)) {
+            if let range = Range(match.range(at: 1), in: string) {
+                return Int(string[range])
+            }
+        }
+        return nil
     }
 }
 
@@ -263,7 +511,10 @@ struct ContentView: View {
     @StateObject private var spotify = SpotifyManager()
     @StateObject private var bluetooth = BluetoothManager()
     @StateObject private var micMonitor = MicMonitor()
+    @StateObject private var gemini = GeminiManager()
     
+    @State private var geminiPrompt: String = ""
+    @FocusState private var geminiFocused: Bool
     @State private var manualViewMode: String = "auto"
     @State private var lastSwipeTime: Date = Date()
     @State private var isVolumeExpanded = false
@@ -445,39 +696,71 @@ struct ContentView: View {
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             
-                            // Elegant pill-shaped battery indicators matching macOS
-                            HStack(spacing: 12) {
-                                HStack(spacing: 4) {
-                                    Text("L")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundColor(Color(white: 0.5))
-                                    Image(systemName: "battery.100")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(Color(white: 0.5), .green)
-                                        .font(.system(size: 12))
+                            // Real, Dynamic Battery Indicators
+                            if bluetooth.batteryLeft != nil || bluetooth.batteryRight != nil || bluetooth.batteryCase != nil || bluetooth.batterySingle != nil {
+                                HStack(spacing: 12) {
+                                    if let bl = bluetooth.batteryLeft {
+                                        HStack(spacing: 4) {
+                                            Text("L")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(Color(white: 0.5))
+                                            Image(systemName: bl > 20 ? "battery.100" : "battery.25")
+                                                .symbolRenderingMode(.palette)
+                                                .foregroundStyle(Color(white: 0.5), bl > 20 ? .green : .red)
+                                                .font(.system(size: 12))
+                                            Text("\(bl)%")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(.white)
+                                        }
+                                    }
+                                    
+                                    if let br = bluetooth.batteryRight {
+                                        HStack(spacing: 4) {
+                                            Text("R")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(Color(white: 0.5))
+                                            Image(systemName: br > 20 ? "battery.100" : "battery.25")
+                                                .symbolRenderingMode(.palette)
+                                                .foregroundStyle(Color(white: 0.5), br > 20 ? .green : .red)
+                                                .font(.system(size: 12))
+                                            Text("\(br)%")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(.white)
+                                        }
+                                    }
+                                    
+                                    if let bc = bluetooth.batteryCase {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: bc > 20 ? "battery.100" : "battery.25")
+                                                .symbolRenderingMode(.palette)
+                                                .foregroundStyle(Color(white: 0.5), bc > 20 ? .green : .red)
+                                                .font(.system(size: 13))
+                                            Text("Case \(bc)%")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(Color(white: 0.5))
+                                        }
+                                    }
+                                    
+                                    if bluetooth.batteryLeft == nil && bluetooth.batteryRight == nil, let bs = bluetooth.batterySingle {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: bs > 20 ? "battery.100" : "battery.25")
+                                                .symbolRenderingMode(.palette)
+                                                .foregroundStyle(Color(white: 0.5), bs > 20 ? .green : .red)
+                                                .font(.system(size: 13))
+                                            Text("\(bs)%")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(Color.white)
+                                        }
+                                    }
                                 }
-                                
-                                HStack(spacing: 4) {
-                                    Text("R")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundColor(Color(white: 0.5))
-                                    Image(systemName: "battery.100")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(Color(white: 0.5), .green)
-                                        .font(.system(size: 12))
-                                }
-                                
-                                HStack(spacing: 4) {
-                                    Image(systemName: "battery.50")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(Color(white: 0.5), .orange)
-                                        .font(.system(size: 13))
-                                    Text("Case")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundColor(Color(white: 0.5))
-                                }
+                                .padding(.top, 2)
+                            } else {
+                                // Searching/Connected state fallback when battery is still fetching or not available
+                                Text("Connected")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(Color(white: 0.6))
+                                    .padding(.top, 2)
                             }
-                            .padding(.top, 2)
                         }
                         Spacer()
                     }
@@ -490,6 +773,88 @@ struct ContentView: View {
                         insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)),
                         removal: .opacity.combined(with: .scale(scale: 0.9))
                     ))
+                } else if manualViewMode == "gemini" {
+                    // GEMINI AI UI
+                    VStack(alignment: .leading, spacing: 14) {
+                        ScrollView {
+                            Text(gemini.responseText)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundColor(.white.opacity(0.9))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .multilineTextAlignment(.leading)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .background(Color.white.opacity(0.05))
+                                .cornerRadius(16)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16)
+                                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                )
+                        }
+                        .frame(maxHeight: 180)
+                        
+                        HStack(spacing: 12) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 18))
+                                .foregroundStyle(.blue, .purple)
+                                .symbolRenderingMode(.palette)
+                                .shadow(color: .purple.opacity(0.6), radius: 5)
+                            
+                            TextField("Message Gemini...", text: $geminiPrompt, onCommit: {
+                                gemini.ask(prompt: geminiPrompt)
+                            })
+                            .focused($geminiFocused)
+                            .onChange(of: manualViewMode) { oldView, newView in
+                                if newView == "gemini" {
+                                    if #available(macOS 14.0, *) {
+                                        NSApp.activate()
+                                    } else {
+                                        NSApp.activate(ignoringOtherApps: true)
+                                    }
+                                    NSApp.windows.first?.makeKey()
+                                    
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                        geminiFocused = true
+                                    }
+                                } else {
+                                    geminiFocused = false
+                                }
+                            }
+                            .textFieldStyle(PlainTextFieldStyle())
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundColor(.white)
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 12)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            )
+                            
+                            Button(action: {
+                                gemini.toggleListening(onTextUpdate: { text in
+                                    geminiPrompt = text
+                                }, onDone: { text in
+                                    gemini.ask(prompt: text)
+                                })
+                            }) {
+                                Image(systemName: gemini.isListening ? "mic.fill" : "mic")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(gemini.isListening ? .red : .white.opacity(0.8))
+                                    .padding(8)
+                                    .background(gemini.isListening ? Color.red.opacity(0.2) : Color.white.opacity(0.1))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                        Spacer(minLength: 4)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, dynamicNotchHeight + 10)
+                    .frame(width: 360, height: dynamicNotchHeight + 168, alignment: .top)
+                    .zIndex(10)
+                    .transition(.contentReveal)
                 } else if showTrackPopup && spotify.trackName != "No Music" && spotify.trackName != "Spotify Closed" {
                     // "Now Playing" Notification Popup
                     VStack(spacing: 0) {
@@ -699,7 +1064,7 @@ struct ContentView: View {
             .contentShape(Rectangle())
             // Dynamic heights for expansion
             .frame(width: isExpanded ? 414 : (manualViewMode == "gemini" ? 380 : (showTrackPopup ? 300 : (micMonitor.isTeamsRunning ? 208 : ((spotify.trackName != "No Music" && spotify.trackName != "Spotify Closed") ? 276 : baseNotchWidth)))),
-                   height: isExpanded ? (isVolumeExpanded ? 230 : 185) : (manualViewMode == "gemini" ? dynamicNotchHeight + 160 : ((bluetooth.showConnectionAlert || manualViewMode == "bluetooth") ? dynamicNotchHeight + 66 : (showTrackPopup ? dynamicNotchHeight + 52 : dynamicNotchHeight))))
+                   height: isExpanded ? (isVolumeExpanded ? 230 : 185) : (manualViewMode == "gemini" ? dynamicNotchHeight + 168 : ((bluetooth.showConnectionAlert || manualViewMode == "bluetooth") ? dynamicNotchHeight + 66 : (showTrackPopup ? dynamicNotchHeight + 52 : dynamicNotchHeight))))
             .scaleEffect((isHovering && !showTrackPopup && !isExpanded) ? 1.06 : 1.0, anchor: .top)
             .background(ScrollDetector { deltaX in
                 let now = Date()
@@ -707,10 +1072,11 @@ struct ContentView: View {
                     lastSwipeTime = now
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
                         isExpanded = false
-                        if deltaX > 0 { // Drag Left -> Bluetooth
+                        if deltaX > 0 && bluetooth.hasConnectedDevice { // Drag Left -> Bluetooth
+                            bluetooth.checkLatestConnectedDevice()
                             bluetooth.showConnectionAlert = true
                             manualViewMode = "bluetooth"
-                        } else {
+                        } else if deltaX <= 0 { // Drag Right -> Spotify
                             bluetooth.showConnectionAlert = false
                             manualViewMode = "auto"
                         }
@@ -722,12 +1088,17 @@ struct ContentView: View {
                     .onEnded { value in
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
                             isExpanded = false
-                            if abs(value.translation.height) > abs(value.translation.width) && value.translation.height > 10 {
-                                manualViewMode = manualViewMode == "gemini" ? "auto" : "gemini"
-                            } else if value.translation.width < 0 { 
+                            if abs(value.translation.height) > abs(value.translation.width) && abs(value.translation.height) > 10 {
+                                if value.translation.height > 10 {
+                                    manualViewMode = "gemini"
+                                } else {
+                                    manualViewMode = "auto"
+                                }
+                            } else if value.translation.width < 0 && bluetooth.hasConnectedDevice { 
+                                bluetooth.checkLatestConnectedDevice()
                                 bluetooth.showConnectionAlert = true
                                 manualViewMode = "bluetooth"
-                            } else {
+                            } else if value.translation.width >= 0 {
                                 bluetooth.showConnectionAlert = false
                                 manualViewMode = "auto"
                             }
@@ -744,12 +1115,17 @@ struct ContentView: View {
                                     lastSwipeTime = now
                                     withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
                                         isExpanded = false
-                                        if abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) && event.scrollingDeltaY > 2.0 {
-                                            manualViewMode = manualViewMode == "gemini" ? "auto" : "gemini"
-                                        } else if event.scrollingDeltaX > 0 { // Swipe Left -> Bluetooth
+                                        if abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) && abs(event.scrollingDeltaY) > 2.0 {
+                                            if event.scrollingDeltaY > 2.0 {
+                                                manualViewMode = "gemini"
+                                            } else {
+                                                manualViewMode = "auto"
+                                            }
+                                        } else if event.scrollingDeltaX > 0 && bluetooth.hasConnectedDevice { // Swipe Left -> Bluetooth
+                                            bluetooth.checkLatestConnectedDevice()
                                             bluetooth.showConnectionAlert = true
                                             manualViewMode = "bluetooth"
-                                        } else { // Swipe Right -> Spotify
+                                        } else if event.scrollingDeltaX <= 0 { // Swipe Right -> Spotify
                                             bluetooth.showConnectionAlert = false
                                             manualViewMode = "auto"
                                         }
@@ -994,6 +1370,14 @@ class SpotifyManager: ObservableObject {
                         self.duration = max(Double(parts[5].replacingOccurrences(of: ",", with: ".")) ?? 1.0, 1.0)
                         self.isShuffling = (parts[6] == "true")
                         self.volume = Double(parts[7].replacingOccurrences(of: ",", with: ".")) ?? 50.0
+                        
+                        // Update Widget
+                        if let defaults = UserDefaults(suiteName: "group.dynamic_island") {
+                            defaults.set(self.trackName, forKey: "spotify_trackName")
+                            defaults.set(self.artistName, forKey: "spotify_artistName")
+                            defaults.set(self.isPlaying, forKey: "spotify_isPlaying")
+                            WidgetCenter.shared.reloadAllTimelines()
+                        }
                     }
                     
                     let artUrl = parts[3]
@@ -1015,6 +1399,12 @@ class SpotifyManager: ObservableObject {
                         self.coverImage = image
                         self.songColor = col
                         self.flipID = UUID() // Trigger the transition only when image is ready
+                        
+                        // Save to Widget Shared Storage
+                        if let defaults = UserDefaults(suiteName: "group.dynamic_island") {
+                            defaults.set(data, forKey: "spotify_coverData")
+                            WidgetCenter.shared.reloadAllTimelines()
+                        }
                     }
                 }
             }

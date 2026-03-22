@@ -8,57 +8,107 @@
 import WidgetKit
 import SwiftUI
 
+#if canImport(AppKit)
+import AppKit
+typealias PlatformImage = NSImage
+#else
+import UIKit
+typealias PlatformImage = UIImage
+#endif
+
 struct Provider: TimelineProvider {
-    func placeholder(in context: Context) -> SimpleEntry {
-        SimpleEntry(date: Date(), emoji: "😀")
+    func placeholder(in context: Context) -> SpotifyEntry {
+        SpotifyEntry(date: Date(), trackName: "Blinding Lights", artistName: "The Weeknd", coverData: nil, isPlaying: true)
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (SimpleEntry) -> ()) {
-        let entry = SimpleEntry(date: Date(), emoji: "😀")
+    func getSnapshot(in context: Context, completion: @escaping (SpotifyEntry) -> ()) {
+        let entry = SpotifyEntry(date: Date(), trackName: "Blinding Lights", artistName: "The Weeknd", coverData: nil, isPlaying: true)
         completion(entry)
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> ()) {
-        var entries: [SimpleEntry] = []
-
-        // Generate a timeline consisting of five entries an hour apart, starting from the current date.
-        let currentDate = Date()
-        for hourOffset in 0 ..< 5 {
-            let entryDate = Calendar.current.date(byAdding: .hour, value: hourOffset, to: currentDate)!
-            let entry = SimpleEntry(date: entryDate, emoji: "😀")
-            entries.append(entry)
-        }
-
-        let timeline = Timeline(entries: entries, policy: .atEnd)
+        // We read from the shared App Group UserDefaults
+        let defaults = UserDefaults(suiteName: "group.dynamic_island")
+        
+        let trackName = defaults?.string(forKey: "spotify_trackName") ?? "Not Playing"
+        let artistName = defaults?.string(forKey: "spotify_artistName") ?? "No Artist"
+        let isPlaying = defaults?.bool(forKey: "spotify_isPlaying") ?? false
+        let coverData = defaults?.data(forKey: "spotify_coverData")
+        
+        let entry = SpotifyEntry(date: Date(), trackName: trackName, artistName: artistName, coverData: coverData, isPlaying: isPlaying)
+        
+        // Refresh every minute, though the main app will force reload on track change
+        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 1, to: Date())!
+        let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
         completion(timeline)
     }
-
-//    func relevances() async -> WidgetRelevances<Void> {
-//        // Generate a list containing the contexts this widget is relevant in.
-//    }
 }
 
-struct SimpleEntry: TimelineEntry {
+struct SpotifyEntry: TimelineEntry {
     let date: Date
-    let emoji: String
+    let trackName: String
+    let artistName: String
+    let coverData: Data?
+    let isPlaying: Bool
 }
 
 struct SpotifyWidgetEntryView : View {
     var entry: Provider.Entry
-    @Environment(\.levelOfDetail) var levelOfDetail: LevelOfDetail
 
     var body: some View {
-        switch levelOfDetail {
-        case .simplified:
-            VStack {
-                Text(entry.date, style: .time)
+        HStack(spacing: 12) {
+            // Album Art
+            if let data = entry.coverData, let pImage = PlatformImage(data: data) {
+                #if canImport(AppKit)
+                Image(nsImage: pImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 50, height: 50)
+                    .cornerRadius(8)
+                    .shadow(radius: 2)
+                #else
+                Image(uiImage: pImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 50, height: 50)
+                    .cornerRadius(8)
+                    .shadow(radius: 2)
+                #endif
+            } else {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(width: 50, height: 50)
+                    .cornerRadius(8)
+                    .overlay(
+                        Image(systemName: "music.note")
+                            .foregroundColor(.white)
+                    )
             }
-        default:
-            VStack {
-                Text("Time:")
-                Text(entry.date, style: .time)
+            
+            // Track Info
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.trackName)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .lineLimit(1)
+                    .foregroundColor(.white)
+                    
+                Text(entry.artistName)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .foregroundColor(.gray)
             }
+            
+            Spacer()
+            
+            // Play/Pause Icon
+            Image(systemName: entry.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                .resizable()
+                .frame(width: 25, height: 25)
+                .foregroundColor(.green)
         }
+        .padding()
+        .containerBackground(Color.black.gradient, for: .widget)
     }
 }
 
@@ -67,19 +117,10 @@ struct SpotifyWidget: Widget {
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: Provider()) { entry in
-            if #available(iOS 17.0, *) {
-                SpotifyWidgetEntryView(entry: entry)
-                    .containerBackground(.white.gradient, for: .widget)
-            } else {
-                SpotifyWidgetEntryView(entry: entry)
-                    .padding()
-                    .background()
-            }
+            SpotifyWidgetEntryView(entry: entry)
         }
-        .supportedFamilies([.systemSmall])
-        .supportedMountingStyles([.elevated])
-        .configurationDisplayName("My Widget")
-        .widgetTexture(.paper)
-        .description("This is an example widget.")
+        .configurationDisplayName("Spotify Player")
+        .description("Shows your currently playing track from the Dynamic Island.")
+        .supportedFamilies([.systemSmall, .systemMedium])
     }
 }

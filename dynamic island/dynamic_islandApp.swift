@@ -16,6 +16,12 @@ struct dynamic_islandApp: App {
     }
 }
 
+class DynamicIslandPanel: NSPanel {
+    override var canBecomeKey: Bool {
+        return true
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var panel: NSPanel!
     
@@ -26,7 +32,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let canvasHeight: CGFloat = 300
         
         // Creating the NSPanel with the exact specifications
-        panel = NSPanel(
+        panel = DynamicIslandPanel(
             contentRect: NSRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight),
             styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless],
             backing: .buffered,
