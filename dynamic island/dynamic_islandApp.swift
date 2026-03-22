@@ -53,9 +53,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.level = .popUpMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         
-        // Let macOS natively handle ignoring mouse clicks on transparent NSPanel pixels! 
-        // This natively solves hover trapping without complex Event loop observers.
-        panel.ignoresMouseEvents = false
+        // Start completely click-through so you can use Google Chrome tabs!
+        // ContentView's 60fps tracking will seamlessly toggle this ONLY when your mouse physically enters the notch.
+        panel.ignoresMouseEvents = true
         
         // Pin strictly rigidly to top center
         if let screen = NSScreen.main {

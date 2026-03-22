@@ -1223,6 +1223,14 @@ struct ContentView: View {
                         showTrackPopup = false // Fix the popup bug where it gets stuck natively!
                     }
                 }
+                
+                // CRITICAL FIX: Only let the huge invisible canvas catch mouse clicks if the mouse is ACTUALLY inside the notch boundaries!
+                // This completely frees your Google Chrome tabs to be clicked underneath the wrapper.
+                DispatchQueue.main.async {
+                    if let window = NSApplication.shared.windows.first(where: { $0.className.contains("DynamicIslandPanel") }) {
+                        window.ignoresMouseEvents = !shouldHover
+                    }
+                }
             }
         }
     }
