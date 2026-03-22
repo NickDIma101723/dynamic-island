@@ -5,7 +5,59 @@
 //
 
 import SwiftUI
+import IOBluetooth
 internal import Combine
+
+struct ScrollDetector: NSViewRepresentable {
+    var onScroll: (CGFloat) -> Void
+    func makeNSView(context: Context) -> NSView {
+         let view = ScrollHostView()
+         view.onScroll = onScroll
+         return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+class ScrollHostView: NSView {
+    var onScroll: ((CGFloat) -> Void)?
+    override func scrollWheel(with event: NSEvent) {
+         if abs(event.scrollingDeltaX) > 2.0 {
+             onScroll?(event.scrollingDeltaX)
+         }
+         super.scrollWheel(with: event)
+    }
+}
+
+class BluetoothManager: NSObject, ObservableObject {
+    @Published var newlyConnectedDevice: String? = nil
+    @Published var showConnectionAlert = false
+    
+    override init() {
+        super.init()
+        IOBluetoothDevice.register(forConnectNotifications: self, selector: #selector(deviceConnected(_:device:)))
+    }
+    
+    @objc func deviceConnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        let deviceName = device.name ?? "Bluetooth Device"
+        
+        DispatchQueue.main.async {
+            self.newlyConnectedDevice = deviceName
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                self.showConnectionAlert = true
+            }
+            
+            // Hide the alert automatically after 4 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                if self.newlyConnectedDevice == deviceName {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                        self.showConnectionAlert = false
+                    }
+                }
+            }
+        }
+    }
+}
+
 import AVFoundation
 
 class MicMonitor: ObservableObject {
@@ -209,8 +261,11 @@ struct ContentView: View {
     let notchCornerRadius: CGFloat = 12
     
     @StateObject private var spotify = SpotifyManager()
+    @StateObject private var bluetooth = BluetoothManager()
     @StateObject private var micMonitor = MicMonitor()
     
+    @State private var manualViewMode: String = "auto"
+    @State private var lastSwipeTime: Date = Date()
     @State private var isVolumeExpanded = false
     @State private var editingPosition: Double = 0.0
     @State private var isEditingPosition: Bool = false
@@ -373,6 +428,68 @@ struct ContentView: View {
                     }
                     .zIndex(1)
                     .transition(.contentReveal)
+                } else if bluetooth.showConnectionAlert || manualViewMode == "bluetooth" {
+                    let deviceName = bluetooth.newlyConnectedDevice ?? "Headphones"
+                    // BLUETOOTH CONNECTION ALERT
+                    HStack(spacing: 16) {
+                        // Clean, minimal native-looking device icon
+                        Image(systemName: deviceName.lowercased().contains("buds") ? "headphones.circle.fill" : (deviceName.lowercased().contains("airpods") ? "airpods.gen3" : "headphones"))
+                            .font(.system(size: 38, weight: .regular))
+                            .foregroundStyle(Color.white)
+                            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(deviceName)
+                                .font(.system(size: 15, weight: .semibold, design: .default))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            
+                            // Elegant pill-shaped battery indicators matching macOS
+                            HStack(spacing: 12) {
+                                HStack(spacing: 4) {
+                                    Text("L")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(Color(white: 0.5))
+                                    Image(systemName: "battery.100")
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(Color(white: 0.5), .green)
+                                        .font(.system(size: 12))
+                                }
+                                
+                                HStack(spacing: 4) {
+                                    Text("R")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(Color(white: 0.5))
+                                    Image(systemName: "battery.100")
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(Color(white: 0.5), .green)
+                                        .font(.system(size: 12))
+                                }
+                                
+                                HStack(spacing: 4) {
+                                    Image(systemName: "battery.50")
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(Color(white: 0.5), .orange)
+                                        .font(.system(size: 13))
+                                    Text("Case")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(Color(white: 0.5))
+                                }
+                            }
+                            .padding(.top, 2)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, dynamicNotchHeight + 6)
+                    .frame(height: dynamicNotchHeight + 66, alignment: .top)
+                    .id("bluetooth-alert")
+                    .zIndex(10) // Always on top
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)),
+                        removal: .opacity.combined(with: .scale(scale: 0.9))
+                    ))
                 } else if showTrackPopup && spotify.trackName != "No Music" && spotify.trackName != "Spotify Closed" {
                     // "Now Playing" Notification Popup
                     VStack(spacing: 0) {
@@ -581,9 +698,78 @@ struct ContentView: View {
             }
             .contentShape(Rectangle())
             // Dynamic heights for expansion
-            .frame(width: isExpanded ? 414 : (showTrackPopup ? 300 : (micMonitor.isTeamsRunning ? 208 : ((spotify.trackName != "No Music" && spotify.trackName != "Spotify Closed") ? 276 : baseNotchWidth))),
-                   height: isExpanded ? (isVolumeExpanded ? 230 : 185) : (showTrackPopup ? dynamicNotchHeight + 52 : dynamicNotchHeight))
+            .frame(width: isExpanded ? 414 : (manualViewMode == "gemini" ? 380 : (showTrackPopup ? 300 : (micMonitor.isTeamsRunning ? 208 : ((spotify.trackName != "No Music" && spotify.trackName != "Spotify Closed") ? 276 : baseNotchWidth)))),
+                   height: isExpanded ? (isVolumeExpanded ? 230 : 185) : (manualViewMode == "gemini" ? dynamicNotchHeight + 160 : ((bluetooth.showConnectionAlert || manualViewMode == "bluetooth") ? dynamicNotchHeight + 66 : (showTrackPopup ? dynamicNotchHeight + 52 : dynamicNotchHeight))))
             .scaleEffect((isHovering && !showTrackPopup && !isExpanded) ? 1.06 : 1.0, anchor: .top)
+            .background(ScrollDetector { deltaX in
+                let now = Date()
+                if now.timeIntervalSince(lastSwipeTime) > 0.4 {
+                    lastSwipeTime = now
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                        isExpanded = false
+                        if deltaX > 0 { // Drag Left -> Bluetooth
+                            bluetooth.showConnectionAlert = true
+                            manualViewMode = "bluetooth"
+                        } else {
+                            bluetooth.showConnectionAlert = false
+                            manualViewMode = "auto"
+                        }
+                    }
+                }
+            })
+            .gesture(
+                DragGesture(minimumDistance: 10, coordinateSpace: .local)
+                    .onEnded { value in
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                            isExpanded = false
+                            if abs(value.translation.height) > abs(value.translation.width) && value.translation.height > 10 {
+                                manualViewMode = manualViewMode == "gemini" ? "auto" : "gemini"
+                            } else if value.translation.width < 0 { 
+                                bluetooth.showConnectionAlert = true
+                                manualViewMode = "bluetooth"
+                            } else {
+                                bluetooth.showConnectionAlert = false
+                                manualViewMode = "auto"
+                            }
+                        }
+                    }
+            )
+            .onAppear {
+                let handleScroll: (NSEvent) -> Void = { event in
+                    if isHovering {
+                        if abs(event.scrollingDeltaX) > 2.0 || abs(event.scrollingDeltaY) > 2.0 {
+                            let now = Date()
+                            if now.timeIntervalSince(lastSwipeTime) > 0.4 {
+                                DispatchQueue.main.async {
+                                    lastSwipeTime = now
+                                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                                        isExpanded = false
+                                        if abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) && event.scrollingDeltaY > 2.0 {
+                                            manualViewMode = manualViewMode == "gemini" ? "auto" : "gemini"
+                                        } else if event.scrollingDeltaX > 0 { // Swipe Left -> Bluetooth
+                                            bluetooth.showConnectionAlert = true
+                                            manualViewMode = "bluetooth"
+                                        } else { // Swipe Right -> Spotify
+                                            bluetooth.showConnectionAlert = false
+                                            manualViewMode = "auto"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                    handleScroll(event)
+                    if isHovering && (abs(event.scrollingDeltaX) > 2.0 || abs(event.scrollingDeltaY) > 2.0) { return nil }
+                    return event
+                }
+                
+                NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { event in
+                    handleScroll(event)
+                }
+            }
             .onTapGesture {
                 if !isExpanded {
                     // Snappy, Apple-like dynamic island elastic expansion
